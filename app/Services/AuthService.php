@@ -11,6 +11,7 @@ use App\DTOs\Auth\UserResponseDTO;
 use App\DTOs\Auth\VerifyOtpDTO;
 use App\Enums\UserRole;
 use App\Enums\UserStatus;
+use App\Models\EmailOtpVerify;
 use App\Models\EventOwner;
 use App\Models\GateKeeper;
 use App\Models\PasswordResetOtp;
@@ -111,13 +112,25 @@ class AuthService
             $tokenName = $dto->deviceName ?: 'authToken';
             $token = $user->createToken($tokenName)->plainTextToken;
 
-            // Step 5: Format response using DTOs
+            // Step 5: Send welcome SMS if phone number is provided
+            if (! empty($user->phone)) {
+                try {
+                    $this->smsService->sendQuickSms(
+                        $user->phone,
+                        "Karibu IventPro, {$user->name}! Your account has been registered successfully. Login at " . config('app.url') . "/auth/login"
+                    );
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning("Could not dispatch welcome SMS to {$user->phone}: {$e->getMessage()}");
+                }
+            }
+
+            // Step 6: Format response using DTOs
             $userResponse = UserResponseDTO::fromModel($user);
 
             return new AuthResponseDTO(
                 token: $token,
                 user: $userResponse,
-                message: 'User registered successfully',
+                message: 'User registered successfully. Welcome message sent!',
                 statusCode: 201,
             );
         });
@@ -375,6 +388,108 @@ class AuthService
         return [
             'status' => 'success',
             'message' => 'Password has been reset successfully. You can now log in with your new password.',
+        ];
+    }
+
+    /**
+     * Generate and dispatch a registration OTP to phone or email.
+     *
+     * @return array<string, mixed>
+     *
+     * @throws ValidationException
+     */
+    public function generateRegistrationOtp(string $email, ?string $phone = null): array
+    {
+        // 1. Verify that email is not already taken
+        if (User::where('email', strtolower($email))->exists()) {
+            throw ValidationException::withMessages([
+                'email' => ['An account with this email address already exists.'],
+            ]);
+        }
+
+        // 2. Verify that phone is not already taken
+        if ($phone && User::where('phone', $phone)->exists()) {
+            throw ValidationException::withMessages([
+                'phone' => ['An account with this phone number already exists.'],
+            ]);
+        }
+
+        // 3. Generate 6-digit OTP code
+        $otp = str_pad((string) random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
+        $startTime = now();
+        $endTime = $startTime->copy()->addMinutes(5);
+
+        // 4. Upsert OTP record
+        EmailOtpVerify::updateOrCreate(
+            ['email' => strtolower($email)],
+            [
+                'phone' => $phone,
+                'otp' => $otp,
+                'startTime' => $startTime,
+                'endTime' => $endTime,
+                'isVerified' => false,
+            ]
+        );
+
+        // 5. Dispatch SMS if phone provided
+        if (! empty($phone)) {
+            try {
+                $this->smsService->sendOtp($phone, $otp);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning("Could not dispatch registration OTP SMS: {$e->getMessage()}");
+            }
+        }
+
+        $maskedPhone = $phone ? BeemSmsService::maskPhone($phone) : null;
+
+        return [
+            'status' => 'success',
+            'message' => $phone
+                ? "Verification code sent to {$maskedPhone}."
+                : 'Verification code generated successfully.',
+            'data' => [
+                'endTime' => $endTime->toIso8601String(),
+                'phoneMasked' => $maskedPhone,
+                'otp' => app()->environment('local', 'testing') ? $otp : null,
+            ],
+        ];
+    }
+
+    /**
+     * Verify a registration OTP code.
+     *
+     * @return array<string, mixed>
+     *
+     * @throws ValidationException
+     */
+    public function verifyRegistrationOtp(string $email, ?string $phone, string $otp): array
+    {
+        $query = EmailOtpVerify::where('email', strtolower($email));
+        if ($phone) {
+            $query->orWhere('phone', $phone);
+        }
+
+        $record = $query->latest('createdAt')->first();
+
+        if (! $record || $record->otp !== $otp) {
+            throw ValidationException::withMessages([
+                'otp' => ['Invalid verification code.'],
+            ]);
+        }
+
+        if ($record->isExpired()) {
+            throw ValidationException::withMessages([
+                'otp' => ['Verification code has expired. Please request a new one.'],
+            ]);
+        }
+
+        $record->update([
+            'isVerified' => true,
+        ]);
+
+        return [
+            'status' => 'success',
+            'message' => 'Verification code confirmed successfully.',
         ];
     }
 }

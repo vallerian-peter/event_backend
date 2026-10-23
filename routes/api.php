@@ -29,6 +29,8 @@ Route::prefix('v1')->group(function (): void {
         // Public Endpoints
         Route::post('/register', [AuthController::class, 'register']);
         Route::post('/login', [AuthController::class, 'login']);
+        Route::post('/otp/generate', [AuthController::class, 'generateRegistrationOtp'])->middleware('throttle:6,1');
+        Route::post('/otp/verify', [AuthController::class, 'verifyRegistrationOtp'])->middleware('throttle:10,1');
         Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
         Route::post('/verify-otp', [AuthController::class, 'verifyOtp']);
         Route::post('/reset-password', [AuthController::class, 'resetPassword']);

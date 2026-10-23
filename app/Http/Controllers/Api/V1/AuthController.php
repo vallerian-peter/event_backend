@@ -130,4 +130,46 @@ class AuthController extends Controller
 
         return response()->json($result, 200);
     }
+
+    /**
+     * Generate registration OTP code sent to phone/email.
+     *
+     * POST /api/v1/auth/otp/generate
+     */
+    public function generateRegistrationOtp(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => ['required', 'string', 'email:rfc', 'max:255'],
+            'phone' => ['required', 'string', 'max:30'],
+        ]);
+
+        $result = $this->authService->generateRegistrationOtp(
+            $validated['email'],
+            $validated['phone']
+        );
+
+        return response()->json($result, 200);
+    }
+
+    /**
+     * Verify registration OTP code before submitting registration form.
+     *
+     * POST /api/v1/auth/otp/verify
+     */
+    public function verifyRegistrationOtp(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => ['required', 'string', 'email:rfc'],
+            'phone' => ['nullable', 'string'],
+            'otp' => ['required', 'string', 'min:4', 'max:10'],
+        ]);
+
+        $result = $this->authService->verifyRegistrationOtp(
+            $validated['email'],
+            $validated['phone'] ?? null,
+            $validated['otp']
+        );
+
+        return response()->json($result, 200);
+    }
 }
